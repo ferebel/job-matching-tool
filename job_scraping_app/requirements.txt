@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+requests
+beautifulsoup4
+pytest
+httpx
+requests-mock
+PyPDF2
+python-docx
