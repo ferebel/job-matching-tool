@@ -1,122 +1,173 @@
 import pytest
-from httpx import AsyncClient
-from app.main import app  # Your FastAPI app instance
-from app.models.claimant import ClaimantRead, ClaimantDocumentRead # Pydantic models
-from unittest.mock import patch, MagicMock # For mocking
-from datetime import datetime
+from httpx import AsyncClient # test_client fixture from conftest.py will provide this
+from sqlalchemy.orm import Session
+from app.models.claimant import SQLClaimant, SQLClaimantDocument, ClaimantCreate # Pydantic model for creation payload
+from app.core.config import settings # For potential direct DB checks or config values
+import io # For creating dummy file content for uploads
 
-# Helper to get the base URL for the test client
-BASE_URL = "http://test"
+# PyPDF2 and python-docx are needed to create realistic file content for testing document parsing
+try:
+    from PyPDF2 import PdfWriter
+    PYPDF2_AVAILABLE = True
+except ImportError:
+    PYPDF2_AVAILABLE = False
 
-@pytest.mark.asyncio
-async def test_create_new_claimant_success():
-    mock_created_claimant = ClaimantRead(
-        id=1,
-        name="Test User",
-        email="test@example.com",
-        phone_number="1234567890",
-        notes="Test notes",
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow()
-    )
+try:
+    from docx import Document as DocxDocument
+    DOCX_AVAILABLE = True
+except ImportError:
+    DOCX_AVAILABLE = False
 
-    with patch("app.db.crud_claimant.create_claimant", return_value=mock_created_claimant) as mock_create:
-        async with AsyncClient(app=app, base_url=BASE_URL) as ac:
-            payload = {"name": "Test User", "email": "test@example.com", "phone_number": "1234567890", "notes": "Test notes"}
-            response = await ac.post("/api/v1/claimants/", json=payload)
 
-        mock_create.assert_called_once()
-        assert response.status_code == 201
-        response_data = response.json()
-        # Compare relevant fields, excluding dynamic ones like created_at/updated_at if they cause issues
-        assert response_data["name"] == mock_created_claimant.name
-        assert response_data["email"] == mock_created_claimant.email
-        assert response_data["id"] == mock_created_claimant.id
+# Note: The test_client fixture is defined in conftest.py and handles DB setup/teardown
+# and overriding the get_db dependency.
 
 @pytest.mark.asyncio
-async def test_create_new_claimant_invalid_payload():
-    async with AsyncClient(app=app, base_url=BASE_URL) as ac:
-        payload = {"name": "Test User"}  # Missing email
-        response = await ac.post("/api/v1/claimants/", json=payload)
+async def test_create_new_claimant_success(test_client: AsyncClient, test_db_session: Session):
+    payload = {"name": "John Doe", "email": "john.doe@example.com", "phone_number": "1234567890", "notes": "Initial notes"}
+    response = await test_client.post("/api/v1/claimants/", json=payload)
+    
+    assert response.status_code == 201
+    response_data = response.json()
+    assert response_data["name"] == payload["name"]
+    assert response_data["email"] == payload["email"]
+    assert "id" in response_data
+    assert "created_at" in response_data
+    assert "updated_at" in response_data
+
+    # Verify data in the test database
+    db_claimant = test_db_session.query(SQLClaimant).filter(SQLClaimant.id == response_data["id"]).first()
+    assert db_claimant is not None
+    assert db_claimant.name == payload["name"]
+    assert db_claimant.email == payload["email"]
+    assert db_claimant.phone_number == payload["phone_number"]
+    assert db_claimant.notes == payload["notes"]
+
+@pytest.mark.asyncio
+async def test_create_new_claimant_invalid_payload(test_client: AsyncClient):
+    payload = {"name": "Missing Email"}  # Email is required
+    response = await test_client.post("/api/v1/claimants/", json=payload)
     assert response.status_code == 422  # Unprocessable Entity for Pydantic validation error
 
 @pytest.mark.asyncio
-async def test_read_claimant_success():
-    claimant_id = 1
-    mock_claimant = ClaimantRead(
-        id=claimant_id,
-        name="Test User",
-        email="test@example.com",
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow()
+async def test_read_claimant_success(test_client: AsyncClient, test_db_session: Session):
+    # First, create a claimant in the test database directly
+    claimant_data = ClaimantCreate(name="Jane Read", email="jane.read@example.com", notes="To be read")
+    db_claimant = SQLClaimant(
+        name=claimant_data.name, 
+        email=claimant_data.email,
+        notes=claimant_data.notes
     )
-    with patch("app.db.crud_claimant.get_claimant", return_value=mock_claimant) as mock_get:
-        async with AsyncClient(app=app, base_url=BASE_URL) as ac:
-            response = await ac.get(f"/api/v1/claimants/{claimant_id}")
+    test_db_session.add(db_claimant)
+    test_db_session.commit()
+    test_db_session.refresh(db_claimant)
+    
+    claimant_id = db_claimant.id
+    response = await test_client.get(f"/api/v1/claimants/{claimant_id}")
 
-        mock_get.assert_called_once_with(db=None, claimant_id=claimant_id) # Ensure db=None is also checked if your Depends is like that
-        assert response.status_code == 200
-        response_data = response.json()
-        assert response_data["id"] == mock_claimant.id
-        assert response_data["name"] == mock_claimant.name
-
-@pytest.mark.asyncio
-async def test_read_claimant_not_found():
-    claimant_id = 99
-    with patch("app.db.crud_claimant.get_claimant", return_value=None) as mock_get:
-        async with AsyncClient(app=app, base_url=BASE_URL) as ac:
-            response = await ac.get(f"/api/v1/claimants/{claimant_id}")
-
-        mock_get.assert_called_once_with(db=None, claimant_id=claimant_id)
-        assert response.status_code == 404
+    assert response.status_code == 200
+    response_data = response.json()
+    assert response_data["id"] == claimant_id
+    assert response_data["name"] == claimant_data.name
+    assert response_data["email"] == claimant_data.email
+    assert response_data["notes"] == claimant_data.notes
 
 @pytest.mark.asyncio
-async def test_upload_claimant_document_success():
-    claimant_id = 1
-    mock_document = ClaimantDocumentRead(
-        id=1,
-        claimant_id=claimant_id,
-        document_type="CV",
-        file_path=f"uploads/claimant_{claimant_id}/test_cv.pdf",
-        uploaded_at=datetime.utcnow()
-    )
-    # Mock get_claimant to simulate claimant exists
-    mock_claimant = ClaimantRead(id=claimant_id, name="Test User", email="test@example.com", created_at=datetime.utcnow(), updated_at=datetime.utcnow())
-
-    with patch("app.db.crud_claimant.get_claimant", return_value=mock_claimant), \
-         patch("app.db.crud_claimant.add_claimant_document", return_value=mock_document) as mock_add_doc:
-
-        async with AsyncClient(app=app, base_url=BASE_URL) as ac:
-            # Prepare multipart form data
-            files = {"file": ("test_cv.pdf", b"dummy content", "application/pdf")}
-            data = {"document_type": "CV"}
-            response = await ac.post(f"/api/v1/claimants/{claimant_id}/documents/", files=files, data=data)
-
-        # Check that add_claimant_document was called correctly
-        # The actual file object will be a SpooledTemporaryFile, so direct comparison is tricky.
-        # We can check if it was called and the type of the file argument.
-        assert mock_add_doc.call_count == 1
-        call_args = mock_add_doc.call_args[1] # Get keyword arguments
-        assert call_args['claimant_id'] == claimant_id
-        assert call_args['document_type'] == "CV"
-        assert hasattr(call_args['file'], 'filename')
-        assert call_args['file'].filename == "test_cv.pdf"
-        
-        assert response.status_code == 200 # As per your current implementation
-        response_data = response.json()
-        assert response_data["id"] == mock_document.id
-        assert response_data["document_type"] == mock_document.document_type
-        assert response_data["file_path"] == mock_document.file_path
+async def test_read_claimant_not_found(test_client: AsyncClient):
+    non_existent_id = 99999
+    response = await test_client.get(f"/api/v1/claimants/{non_existent_id}")
+    assert response.status_code == 404
 
 @pytest.mark.asyncio
-async def test_upload_claimant_document_claimant_not_found():
-    claimant_id = 99 # Non-existent claimant
-    with patch("app.db.crud_claimant.get_claimant", return_value=None) as mock_get_claimant:
-        async with AsyncClient(app=app, base_url=BASE_URL) as ac:
-            files = {"file": ("test_cv.pdf", b"dummy content", "application/pdf")}
-            data = {"document_type": "CV"}
-            response = await ac.post(f"/api/v1/claimants/{claimant_id}/documents/", files=files, data=data)
+async def test_upload_claimant_document_success_pdf(test_client: AsyncClient, test_db_session: Session):
+    if not PYPDF2_AVAILABLE:
+        pytest.skip("PyPDF2 not installed, skipping PDF upload test.")
 
-        mock_get_claimant.assert_called_once_with(db=None, claimant_id=claimant_id)
-        assert response.status_code == 404
-        assert response.json()["detail"] == "Claimant not found for document upload"
+    # 1. Create a claimant first
+    claimant_data = ClaimantCreate(name="Doc Owner", email="doc.owner@example.com")
+    db_claimant = SQLClaimant(name=claimant_data.name, email=claimant_data.email)
+    test_db_session.add(db_claimant)
+    test_db_session.commit()
+    test_db_session.refresh(db_claimant)
+    claimant_id = db_claimant.id
+
+    # 2. Prepare dummy PDF content
+    pdf_content_bytes = io.BytesIO()
+    writer = PdfWriter()
+    writer.add_blank_page(width=210, height=297) # A4 size
+    # For a real test of text extraction, add text here using a library like reportlab
+    # or use a pre-made PDF with known text.
+    # For this example, we'll assume extract_text_from_document handles it.
+    # If extract_text_from_document is mocked or the PDF is blank, raw_text_content will be empty.
+    writer.write(pdf_content_bytes)
+    pdf_content_bytes.seek(0)
+    
+    # 3. Make POST request
+    files = {"file": ("test_cv.pdf", pdf_content_bytes, "application/pdf")}
+    data = {"document_type": "CV"}
+    response = await test_client.post(f"/api/v1/claimants/{claimant_id}/documents/", files=files, data=data)
+
+    assert response.status_code == 200 # Endpoint uses 200 for successful document upload
+    response_data = response.json()
+    assert response_data["claimant_id"] == claimant_id
+    assert response_data["document_type"] == "CV"
+    assert "test_cv.pdf" in response_data["file_path"] # Check if filename is in path
+    # Check if raw_text_content exists (might be empty if dummy PDF was blank and no real text added)
+    assert "raw_text_content" in response_data 
+    # Example: if you added text "Hello PDF" to the PDF:
+    # assert "Hello PDF" in response_data["raw_text_content"]
+
+    # 4. Verify document data in the test database
+    db_document = test_db_session.query(SQLClaimantDocument).filter(SQLClaimantDocument.id == response_data["id"]).first()
+    assert db_document is not None
+    assert db_document.claimant_id == claimant_id
+    assert db_document.document_type == "CV"
+    assert "test_cv.pdf" in db_document.file_path
+    assert db_document.raw_text_content is not None # Should exist, even if empty
+
+@pytest.mark.asyncio
+async def test_upload_claimant_document_success_docx(test_client: AsyncClient, test_db_session: Session):
+    if not DOCX_AVAILABLE:
+        pytest.skip("python-docx not installed, skipping DOCX upload test.")
+
+    # 1. Create a claimant
+    claimant_data = ClaimantCreate(name="Docx User", email="docx.user@example.com")
+    db_claimant = SQLClaimant(name=claimant_data.name, email=claimant_data.email)
+    test_db_session.add(db_claimant)
+    test_db_session.commit()
+    test_db_session.refresh(db_claimant)
+    claimant_id = db_claimant.id
+
+    # 2. Prepare dummy DOCX content
+    docx_content_bytes = io.BytesIO()
+    doc = DocxDocument()
+    doc.add_paragraph("This is a test DOCX document for upload.")
+    doc.save(docx_content_bytes)
+    docx_content_bytes.seek(0)
+
+    # 3. Make POST request
+    files = {"file": ("test_cv.docx", docx_content_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+    data = {"document_type": "CoverLetter"}
+    response = await test_client.post(f"/api/v1/claimants/{claimant_id}/documents/", files=files, data=data)
+
+    assert response.status_code == 200
+    response_data = response.json()
+    assert response_data["claimant_id"] == claimant_id
+    assert response_data["document_type"] == "CoverLetter"
+    assert "test_cv.docx" in response_data["file_path"]
+    assert "This is a test DOCX document for upload." in response_data["raw_text_content"]
+
+    # 4. Verify in DB
+    db_document = test_db_session.query(SQLClaimantDocument).filter(SQLClaimantDocument.id == response_data["id"]).first()
+    assert db_document is not None
+    assert "This is a test DOCX document for upload." in db_document.raw_text_content
+
+@pytest.mark.asyncio
+async def test_upload_claimant_document_claimant_not_found(test_client: AsyncClient):
+    non_existent_claimant_id = 99998
+    files = {"file": ("test_cv.pdf", b"dummy pdf content", "application/pdf")}
+    data = {"document_type": "CV"}
+    response = await test_client.post(f"/api/v1/claimants/{non_existent_claimant_id}/documents/", files=files, data=data)
+    
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Claimant not found for document upload"
