@@ -1,88 +1,101 @@
-from typing import Any, Optional
-from fastapi import UploadFile
-from app.models.claimant import ClaimantCreate, ClaimantRead, ClaimantDocumentRead
-from datetime import datetime
-import os
-# import shutil # No longer using shutil for mock
-from app.services.document_parser import extract_text_from_document
+from typing import Optional
+from sqlalchemy.orm import Session
+from app.models.claimant import SQLClaimant, SQLClaimantDocument, ClaimantCreate, ClaimantDocumentCreate # Pydantic models for creation
+# Note: ClaimantRead and ClaimantDocumentRead are used by API, not directly returned by CRUD now
+# from app.services.document_parser import extract_text_from_document # No longer in CRUD
 import logging
+# import os # For path manipulation if saving files, not directly in CRUD now
 
 logger = logging.getLogger(__name__)
 
-# Mock database (in-memory dictionary)
-mock_db_claimants = {}
-mock_db_documents = {} # Stores lists of documents per claimant_id
-next_claimant_id = 1
-next_document_id = 1
+# No more mock DB or global counters
+# mock_db_claimants = {}
+# mock_db_documents = {} 
+# next_claimant_id = 1
+# next_document_id = 1
 
-def create_claimant(db: Any, claimant: ClaimantCreate) -> ClaimantRead:
-    global next_claimant_id
-    now = datetime.utcnow()
-    new_claimant = ClaimantRead(
-        id=next_claimant_id,
-        created_at=now,
-        updated_at=now,
-        **claimant.dict()
+def create_claimant(db: Session, claimant: ClaimantCreate) -> SQLClaimant:
+    """
+    Create a new claimant in the database.
+    """
+    db_claimant = SQLClaimant(
+        name=claimant.name,
+        email=claimant.email,
+        phone_number=claimant.phone_number,
+        notes=claimant.notes,
+        target_location=claimant.target_location, # Added
+        search_keywords=claimant.search_keywords  # Added
+        # created_at and updated_at are handled by default/onupdate in SQLClaimant model
     )
-    mock_db_claimants[next_claimant_id] = new_claimant
-    next_claimant_id += 1
-    logger.info(f"Created claimant: {new_claimant.id} - {new_claimant.name}")
-    return new_claimant
+    db.add(db_claimant)
+    db.commit()
+    db.refresh(db_claimant)
+    logger.info(f"Created claimant with ID: {db_claimant.id} - Name: {db_claimant.name}")
+    return db_claimant
 
-def get_claimant(db: Any, claimant_id: int) -> Optional[ClaimantRead]:
-    claimant = mock_db_claimants.get(claimant_id)
+def get_claimant(db: Session, claimant_id: int) -> Optional[SQLClaimant]:
+    """
+    Get a claimant by their ID from the database.
+    """
+    claimant = db.query(SQLClaimant).filter(SQLClaimant.id == claimant_id).first()
     if claimant:
-        logger.info(f"Retrieved claimant: {claimant_id}")
+        logger.info(f"Retrieved claimant with ID: {claimant_id}")
     else:
-        logger.info(f"Claimant not found: {claimant_id}")
+        logger.info(f"Claimant with ID: {claimant_id} not found.")
     return claimant
 
-async def add_claimant_document(db: Any, claimant_id: int, file: UploadFile, document_type: str) -> Optional[ClaimantDocumentRead]:
-    global next_document_id
-    claimant = get_claimant(db, claimant_id)
-    if not claimant:
-        logger.warning(f"Cannot add document. Claimant not found: {claimant_id}")
+def add_claimant_document(
+    db: Session, 
+    doc_create: ClaimantDocumentCreate, # Pydantic model containing document_type
+    claimant_id: int, 
+    file_path: Optional[str], 
+    raw_text: Optional[str]
+) -> SQLClaimantDocument:
+    """
+    Add a new document for a claimant to the database.
+    The API layer is responsible for providing claimant_id, file_path, and raw_text.
+    """
+    
+    db_document = SQLClaimantDocument(
+        claimant_id=claimant_id,
+        document_type=doc_create.document_type,
+        file_path=file_path,
+        raw_text_content=raw_text
+        # parsed_entities can be added here if it's part of initial creation
+        # uploaded_at is handled by default in SQLClaimantDocument model
+    )
+    db.add(db_document)
+    db.commit()
+    db.refresh(db_document)
+    logger.info(f"Added document ID: {db_document.id} ({db_document.document_type}) for claimant ID: {claimant_id}. Path: {db_document.file_path}")
+    return db_document
+
+
+def update_claimant(db: Session, claimant_id: int, claimant_update: "ClaimantUpdate") -> Optional[SQLClaimant]: # ClaimantUpdate from app.models.claimant
+    """
+    Update an existing claimant in the database.
+    """
+    db_claimant = get_claimant(db, claimant_id)
+    if not db_claimant:
+        logger.warning(f"Claimant with ID {claimant_id} not found for update.")
         return None
 
-    # Simulate saving the file - path generation
-    # In a real app, you'd ensure the upload_dir exists and save the file securely.
-    # For mock purposes, we'll just generate a path.
-    upload_dir = f"uploads/claimant_{claimant_id}"
-    # os.makedirs(upload_dir, exist_ok=True) # Not creating dir in mock
-    file_path = os.path.join(upload_dir, file.filename)
-    logger.info(f"Simulating file save for '{file.filename}' to path '{file_path}' for claimant {claimant_id}.")
-
-    # Read file content for text extraction
-    file_content = await file.read()
-    await file.seek(0) # Reset file pointer if it needs to be read again (e.g. for actual saving)
-
-    logger.info(f"Attempting to extract text from document: {file.filename}, MIME: {file.content_type}")
-    extracted_text = extract_text_from_document(
-        file_path=file.filename, 
-        file_content=file_content, 
-        mime_type=file.content_type
-    )
+    update_data = claimant_update.dict(exclude_unset=True) # Get only fields that were actually set
     
-    # For mock, we might just store a snippet or confirmation
-    raw_text_content_for_model = f"Text extracted (length: {len(extracted_text)})." 
-    if not extracted_text:
-        raw_text_content_for_model = "Text extraction failed or document was empty."
-        logger.warning(f"Text extraction yielded no content for: {file.filename}")
+    updated_fields_count = 0
+    for field, value in update_data.items():
+        if hasattr(db_claimant, field):
+            setattr(db_claimant, field, value)
+            updated_fields_count +=1
+        # else:
+            # logger.warning(f"Attempted to update non-existent field '{field}' on SQLClaimant.")
 
-
-    now = datetime.utcnow()
-    new_document = ClaimantDocumentRead(
-        id=next_document_id,
-        claimant_id=claimant_id,
-        document_type=document_type,
-        file_path=file_path, # Store the simulated path
-        raw_text_content=raw_text_content_for_model, # Add extracted text info
-        uploaded_at=now
-    )
-    
-    if claimant_id not in mock_db_documents:
-        mock_db_documents[claimant_id] = []
-    mock_db_documents[claimant_id].append(new_document)
-    next_document_id += 1
-    logger.info(f"Added document {new_document.id} ({new_document.document_type}) for claimant {claimant_id}. Path: {new_document.file_path}")
-    return new_document
+    if updated_fields_count > 0:
+        # db_claimant.updated_at = datetime.utcnow() # SQLAlchemy onupdate handles this
+        db.commit()
+        db.refresh(db_claimant)
+        logger.info(f"Updated claimant with ID: {claimant_id}. {updated_fields_count} fields changed.")
+    else:
+        logger.info(f"No fields to update for claimant with ID: {claimant_id}.")
+        
+    return db_claimant

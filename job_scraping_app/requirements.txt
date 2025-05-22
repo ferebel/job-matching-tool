@@ -7,3 +7,8 @@ httpx
 requests-mock
 PyPDF2
 python-docx
+sqlalchemy
+psycopg2-binary
+alembic
+pydantic[dotenv] # For BaseSettings .env file loading
+streamlit
