@@ -12,3 +12,4 @@ psycopg2-binary
 alembic
 pydantic[dotenv] # For BaseSettings .env file loading
 streamlit
+gunicorn
