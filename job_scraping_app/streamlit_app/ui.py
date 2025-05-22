@@ -1,9 +1,12 @@
 import streamlit as st
 import requests
 import json # For parsing JSON responses if needed, though requests.json() is usually enough
+import os # For environment variables
+from datetime import datetime # For formatting dates in matched jobs display
 
 # --- Configuration ---
-BACKEND_URL = "http://localhost:8000/api/v1" # Ensure this matches your FastAPI backend URL
+# Read backend URL from environment variable, with a default for local development
+BACKEND_URL = os.getenv("BACKEND_API_URL", "http://localhost:8000/api/v1")
 
 # --- Helper Functions ---
 
@@ -306,5 +309,6 @@ else:
 #     except Exception as e:
 #         st.error(f"An error occurred while fetching scraped jobs: {e}")
 
-
-st.sidebar.info("Ensure the FastAPI backend is running at " + BACKEND_URL)
+# Display the backend URL being used (for debugging, can be removed later)
+st.sidebar.caption(f"API Backend: {BACKEND_URL}")
+st.sidebar.info("Ensure the FastAPI backend is running and accessible at the URL above.")
