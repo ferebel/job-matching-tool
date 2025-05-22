@@ -88,7 +88,12 @@ def run_migrations_online():
     engine_config = config.get_section(config.config_ini_section)
     if engine_config is None: # Should not happen with default alembic.ini structure
         engine_config = {}
-    engine_config['sqlalchemy.url'] = settings.DATABASE_URL
+    
+    # Ensure the DATABASE_URL uses the 'postgresql://' scheme
+    db_url = settings.DATABASE_URL
+    if db_url and db_url.startswith("postgres://"):
+        db_url = db_url.replace("postgres://", "postgresql://", 1)
+    engine_config['sqlalchemy.url'] = db_url
     
     connectable = engine_from_config(
         engine_config, # Use the modified config section
