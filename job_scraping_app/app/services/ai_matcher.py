@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.models.claimant import SQLClaimant, SQLClaimantDocument # Assuming SQLClaimant is the one with relationships
 from app.models.job_posting import SQLJobPosting
-from app.models.matched_job import MatchedJobCreate
+from app.models.matched_job import MatchedJobCreate, SQLMatchedJob # Added SQLMatchedJob
 from app.db.crud_matched_jobs import create_matched_job
 from app.db.crud_claimant import get_claimant # Using existing get_claimant
 from app.db.crud_jobs import get_job_postings
