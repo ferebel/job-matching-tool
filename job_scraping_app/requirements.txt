@@ -14,3 +14,4 @@ pydantic[dotenv,email] # For BaseSettings .env file loading and email validation
 streamlit
 gunicorn
 pydantic-settings
+python-multipart
